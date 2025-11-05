@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>District 2 Birthday App (v2.4)</title>
+    <title>District 2 Birthday App (v2.5)</title>
     <style>
         :root {
             --primary-color: #0d47a1; /* Darker Blue */
@@ -568,7 +568,8 @@
 
     <script>
         // --- CONFIGURATION ---
-        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzPqthpFzFfWewIri0pNptKytzeKu7wxu1j-Bi4fMPFRuh6fHC-AnPE8btbPpfw1lR7/exec';
+        // This MUST be the new URL from your final deployment
+        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxQB8KHS-SrFpga692Q_wwudapwPlDEZWdqzkF4cIKU1-fSxdbI8InNkFg5ivyloLCk/exec';
         
         // --- GLOBAL VARIABLES ---
         let currentSort = { column: 'priority', asc: true };
@@ -628,9 +629,15 @@
                     mode: 'cors',
                     cache: 'no-cache',
                     headers: {
-                        'Content-Type': 'application/json',
+                        // THIS IS THE FIX:
+                        // We change the content type to text/plain.
+                        // This makes it a "simple request" and avoids the CORS
+                        // preflight 'OPTIONS' request that Google is blocking.
+                         'Content-Type': 'text/plain;charset=UTF-8',
                     },
                     redirect: 'follow',
+                    // The server script will get this as a string in e.postData.contents
+                    // and JSON.parse() it.
                     body: JSON.stringify({ action: action, payload: payload }),
                 });
 
@@ -1115,6 +1122,3 @@
 
 </body>
 </html>
-
-
-
