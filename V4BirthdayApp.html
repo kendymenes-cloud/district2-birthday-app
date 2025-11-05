@@ -1,0 +1,354 @@
+<script>
+/* -----------------------------------------------------------------
+   District 2 Birthday App v3 — Stable Frontend (Google Sheets + Apps Script)
+   Fixes:
+   - Correct POST format for doPost(e)
+   - Added better error logs
+   - Ensures JSON header + CORS safety
+------------------------------------------------------------------*/
+
+// --- CONFIGURATION ---
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzx-pUCYVB08JcyjPAat7iJLTSEDh65yjRsKH1ZgaA_V4EnXj6Dws9_zweRObKSB342/exec'; // Replace with your Apps Script deployed URL
+const TODAY = new Date();
+TODAY.setHours(0, 0, 0, 0);
+
+// --- GLOBALS ---
+let currentSort = { column: 'priority', asc: true };
+let activeDateFilter = 'today';
+let currentDataCache = [];
+let municipalityOptions = [];
+let positionOptions = [];
+let barangayOptions = [];
+
+// --- DOM ELEMENTS ---
+const cardToday = document.getElementById('card-today');
+const cardUpcoming = document.getElementById('card-upcoming');
+const cardLogged = document.getElementById('card-logged');
+const cardTotal = document.getElementById('card-total');
+
+const tableBody = document.getElementById('table-body');
+const resultCount = document.getElementById('result-count');
+const tableLoader = document.getElementById('table-loader');
+
+// Filters
+const navButtons = document.querySelectorAll('.nav-btn');
+const searchInput = document.getElementById('search-name');
+const monthFilter = document.getElementById('filter-month');
+const municipalityFilter = document.getElementById('filter-municipality');
+const positionFilter = document.getElementById('filter-position');
+const barangayFilter = document.getElementById('filter-barangay');
+const needsGreetingToggle = document.getElementById('toggle-needs-greeting');
+
+// Add Modal
+const addModal = document.getElementById('add-person-modal');
+const openAddModalBtn = document.getElementById('open-add-modal-btn');
+const closeAddModalBtn = document.getElementById('close-add-modal-btn');
+const cancelFormBtn = document.getElementById('cancel-form-btn');
+const addPersonForm = document.getElementById('add-person-form');
+const formStatus = document.getElementById('form-status');
+const formMunicipalitySelect = document.getElementById('form-municipality');
+
+// Template Modal
+const templateModal = document.getElementById('template-modal');
+const templateModalName = document.getElementById('template-modal-name');
+const templateListBody = document.getElementById('template-list-body');
+const closeTemplateModalBtn = document.getElementById('close-template-modal-btn');
+
+/* -----------------------------------------------------------------
+   POST FUNCTION — Unified API Bridge
+------------------------------------------------------------------*/
+async function postToScript(action, payload = {}) {
+  try {
+    const response = await fetch(SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, payload }),
+      redirect: 'follow',
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`HTTP ${response.status}: ${text}`);
+    }
+
+    const result = await response.json();
+    if (!result || result.status === 'error') {
+      throw new Error(result?.message || 'Unknown backend error');
+    }
+
+    return result;
+  } catch (err) {
+    console.error(`Error in postToScript(${action}):`, err);
+    alert(`Error: ${err.message}`);
+    throw err;
+  }
+}
+
+/* -----------------------------------------------------------------
+   INITIALIZATION
+------------------------------------------------------------------*/
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    await Promise.all([loadDashboardData(), loadFilterOptions()]);
+    await loadFilteredData();
+    setupEventListeners();
+  } catch (err) {
+    console.error('Initialization failed:', err);
+    resultCount.textContent = 'Error loading data. Please try again.';
+  }
+});
+
+/* -----------------------------------------------------------------
+   DASHBOARD + FILTER LOADERS
+------------------------------------------------------------------*/
+async function loadDashboardData() {
+  const result = await postToScript('getDashboardData', {});
+  if (!result) return;
+
+  cardToday.textContent = result.todaysBirthdays;
+  cardUpcoming.textContent = result.upcomingWeek;
+  cardLogged.textContent = `${result.loggedToday} / ${result.todaysBirthdays}`;
+  cardTotal.textContent = result.totalOfficials;
+}
+
+async function loadFilterOptions() {
+  const result = await postToScript('getFilterOptions', {});
+  if (!result) return;
+
+  municipalityOptions = result.municipalities || [];
+  positionOptions = result.positions || [];
+  barangayOptions = result.barangays || [];
+
+  populateSelect(municipalityFilter, municipalityOptions);
+  populateSelect(positionFilter, positionOptions);
+  populateSelect(barangayFilter, barangayOptions);
+  populateSelect(formMunicipalitySelect, municipalityOptions, 'Select Municipality');
+}
+
+/* -----------------------------------------------------------------
+   TABLE DATA LOADING
+------------------------------------------------------------------*/
+async function loadFilteredData() {
+  tableLoader.style.display = 'flex';
+  resultCount.textContent = 'Loading...';
+
+  const payload = {
+    dateFilter: activeDateFilter,
+    search: searchInput.value,
+    month: monthFilter.value,
+    municipality: municipalityFilter.value,
+    position: positionFilter.value,
+    barangay: barangayFilter.value,
+  };
+
+  const result = await postToScript('getFilteredData', payload);
+
+  if (result?.data) {
+    result.data.forEach(p => {
+      p.birthday = new Date(p.birthday);
+      p.month = p.birthday.getMonth() + 1;
+      p.day = p.birthday.getDate();
+    });
+    currentDataCache = result.data;
+    applyLocalFiltersAndRender();
+  } else {
+    resultCount.textContent = 'No data received.';
+  }
+
+  tableLoader.style.display = 'none';
+}
+
+/* -----------------------------------------------------------------
+   LOCAL FILTERS + RENDERING
+------------------------------------------------------------------*/
+function applyLocalFiltersAndRender() {
+  let data = [...currentDataCache];
+  if (needsGreetingToggle.checked) data = data.filter(p => !p.isLogged);
+  sortData(data);
+  renderTable(data);
+}
+
+function sortData(data) {
+  data.sort((a, b) => {
+    let valA, valB;
+    if (currentSort.column === 'birthday') {
+      valA = a.month * 100 + a.day;
+      valB = b.month * 100 + b.day;
+    } else {
+      valA = a[currentSort.column];
+      valB = b[currentSort.column];
+    }
+    return currentSort.asc ? valA - valB : valB - valA;
+  });
+}
+
+function renderTable(data) {
+  tableBody.innerHTML = '';
+  if (!data.length) {
+    resultCount.textContent = 'No officials found.';
+    return;
+  }
+  resultCount.textContent = `Found ${data.length} officials.`;
+
+  const fragment = document.createDocumentFragment();
+  data.forEach(p => {
+    const tr = document.createElement('tr');
+    const bdayStr = `${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')} (${p.year})`;
+    const priorityHtml = p.priority <= 3
+      ? `<span class="priority-badge p-${p.priority}">P${p.priority}</span>` : `N/A`;
+    tr.innerHTML = `
+      <td>${priorityHtml}</td>
+      <td>${bdayStr}</td>
+      <td>${p.name}</td>
+      <td>${p.position}</td>
+      <td>${p.barangay}</td>
+      <td>${p.municipality}</td>
+      <td>${p.contact}</td>
+      <td>
+        <button class="action-btn template-btn" data-json='${JSON.stringify(p)}'>Template</button>
+        <button class="action-btn log-btn ${p.isLogged ? 'logged' : ''}" 
+                data-name="${p.name}" 
+                data-pos="${p.position}" 
+                data-mun="${p.municipality}"
+                ${p.isLogged ? 'disabled' : ''}>
+          ${p.isLogged ? 'Logged' : 'Log'}
+        </button>
+        <button class="action-btn copy-btn" data-contact="${p.contact}">Copy</button>
+      </td>`;
+    fragment.appendChild(tr);
+  });
+  tableBody.appendChild(fragment);
+}
+
+/* -----------------------------------------------------------------
+   UTILITIES + UI HELPERS
+------------------------------------------------------------------*/
+function populateSelect(select, list, defaultText = 'All') {
+  select.innerHTML = `<option value="">${defaultText}</option>`;
+  list.forEach(item => {
+    const opt = document.createElement('option');
+    opt.value = item;
+    opt.textContent = item;
+    select.appendChild(opt);
+  });
+}
+
+/* -----------------------------------------------------------------
+   EVENT HANDLERS
+------------------------------------------------------------------*/
+function setupEventListeners() {
+  // Navigation
+  navButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      navButtons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeDateFilter = btn.dataset.filter;
+      loadFilteredData();
+    });
+  });
+
+  // Filters
+  [searchInput, monthFilter, municipalityFilter, positionFilter, barangayFilter]
+    .forEach(el => el.addEventListener('change', loadFilteredData));
+
+  needsGreetingToggle.addEventListener('change', applyLocalFiltersAndRender);
+
+  // Add Modal
+  openAddModalBtn.addEventListener('click', () => addModal.style.display = 'flex');
+  closeAddModalBtn.addEventListener('click', () => addModal.style.display = 'none');
+  cancelFormBtn.addEventListener('click', () => addModal.style.display = 'none');
+  addPersonForm.addEventListener('submit', handleAddPerson);
+
+  // Template Modal
+  closeTemplateModalBtn.addEventListener('click', () => templateModal.style.display = 'none');
+  window.addEventListener('click', e => {
+    if (e.target === addModal) addModal.style.display = 'none';
+    if (e.target === templateModal) templateModal.style.display = 'none';
+  });
+
+  tableBody.addEventListener('click', e => {
+    const btn = e.target.closest('.action-btn');
+    if (!btn) return;
+    if (btn.classList.contains('log-btn')) handleLogGreeting(btn);
+    if (btn.classList.contains('copy-btn')) handleCopyContact(btn);
+    if (btn.classList.contains('template-btn')) handleOpenTemplateModal(JSON.parse(btn.dataset.json));
+  });
+}
+
+/* -----------------------------------------------------------------
+   CORE ACTIONS (Add, Log, Copy, Template)
+------------------------------------------------------------------*/
+async function handleAddPerson(e) {
+  e.preventDefault();
+  const payload = {
+    fullName: document.getElementById('form-fullName').value,
+    birthday: document.getElementById('form-birthday').value,
+    contactNo: document.getElementById('form-contactNo').value,
+    position: document.getElementById('form-position').value,
+    barangay: document.getElementById('form-barangay').value,
+    municipality: document.getElementById('form-municipality').value,
+  };
+  try {
+    await postToScript('addOfficial', payload);
+    showFormStatus('Official added successfully!', 'success');
+    loadDashboardData();
+    loadFilterOptions();
+    loadFilteredData();
+    setTimeout(() => { addModal.style.display = 'none'; }, 2000);
+  } catch (err) {
+    showFormStatus(`Error: ${err.message}`, 'error');
+  }
+}
+
+async function handleLogGreeting(btn) {
+  const payload = {
+    fullName: btn.dataset.name,
+    position: btn.dataset.pos,
+    municipality: btn.dataset.mun,
+  };
+  btn.textContent = '...';
+  try {
+    await postToScript('logGreeting', payload);
+    btn.textContent = 'Logged';
+    btn.disabled = true;
+    btn.classList.add('logged');
+    loadDashboardData();
+  } catch (err) {
+    btn.textContent = 'Log';
+    alert(err.message);
+  }
+}
+
+function handleCopyContact(btn) {
+  const num = btn.dataset.contact;
+  if (!num || num === 'N/A') return;
+  navigator.clipboard.writeText(num).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => (btn.textContent = 'Copy'), 1500);
+  });
+}
+
+function handleOpenTemplateModal(p) {
+  templateModalName.textContent = p.name;
+  const last = p.name.split(' ').pop();
+  const templates = [
+    `Magandang araw, ${p.position} ${last}! Isang maligayang bati sa iyong kaarawan.`,
+    `Happy Birthday, ${p.position} ${last}! Wishing you success.`,
+    `Pagbati mula sa aming tanggapan, ${p.position} ${last}!`
+  ];
+  templateListBody.innerHTML = templates.map(t => `
+    <div class="template">
+      <div class="template-body">${t}</div>
+      <div class="template-actions">
+        <button class="template-copy-btn" onclick="navigator.clipboard.writeText('${t}').then(()=>this.textContent='Copied!')">Copy Text</button>
+      </div>
+    </div>`).join('');
+  templateModal.style.display = 'flex';
+}
+
+function showFormStatus(msg, type) {
+  formStatus.textContent = msg;
+  formStatus.className = `status-message ${type}`;
+  formStatus.style.display = 'block';
+}
+</script>
